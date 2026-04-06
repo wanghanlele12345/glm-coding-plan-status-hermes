@@ -2,6 +2,8 @@
 
 > Z.AI / Zhipu AI Coding Plan usage monitor plugin for [Hermes Agent](https://github.com/emcie-co/hermes-agent)
 
+![Status Bar Preview](preview.png)
+
 Real-time usage status bar for Z.AI (Zhipu AI) Coding Plan subscribers. Displays token quota, MCP usage, estimated cost, and model info in a Claude Code-style status bar.
 
 Converted from [glm-coding-plan-statusline](https://github.com/jeongsk/glm-coding-plan-statusline) (by @jeongsk) to Hermes plugin format.

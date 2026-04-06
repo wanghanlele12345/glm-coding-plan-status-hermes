@@ -70,6 +70,22 @@ def _get_usage_context(**hook_kwargs: Any) -> str:
         if data.get("error") == "setup_required":
             return ""
 
+        # If API is unavailable and we have no stale data, still show status bar
+        # with the model name from hook_kwargs (not "Unknown") and cached-reset info
+        if data.get("apiUnavailable"):
+            parts = [f"[Status: {model_name}"]
+            parts.append(f"Tokens: --")
+            parts.append("MCP: --")
+            parts.append("]")
+            status_line = " ".join(parts)
+            return (
+                f"[INSTRUCTION: You MUST display the following status bar at the "
+                f"very beginning of your response, exactly as shown, before any "
+                f"other content. Do NOT omit it, summarize it, or rephrase it. "
+                f"This is a persistent UI element that must appear in every reply.]\n"
+                f"{status_line}"
+            )
+
         parts = [f"[Status: {model_name}"]
         parts.append(f"Tokens: {token_pct}%")
         if reset_str:

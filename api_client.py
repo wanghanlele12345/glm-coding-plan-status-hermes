@@ -198,14 +198,25 @@ def fetch_usage_data() -> Dict[str, Any]:
 
     Returns a dict with: token_percent, mcp_percent, total_cost,
     model_name, next_reset_time, next_reset_time_str, error.
+
+    Cache strategy:
+    - Fresh data (success): cached for CACHE_TTL_SUCCESS (60 s)
+    - API failure: cached for CACHE_TTL_FAILURE (15 s) with apiUnavailable flag
+    - If cache is expired but API fails, stale cache is served as fallback
+      (with a "stale" flag) instead of returning an error — this prevents
+      the status bar from disappearing during transient network issues.
     """
     # Check cache first
     cache = _load_cache()
+    stale_fallback: Optional[Dict] = None
     if cache:
         ts = cache.get("timestamp", 0)
         ttl = CACHE_TTL_FAILURE if cache.get("data", {}).get("apiUnavailable") else CACHE_TTL_SUCCESS
         if time.time() * 1000 - ts < ttl:
             return cache["data"]
+        # Cache expired — keep it as stale fallback in case the API is down
+        if not cache.get("data", {}).get("apiUnavailable"):
+            stale_fallback = cache["data"]
 
     # Load config
     cfg = load_config()
@@ -267,4 +278,13 @@ def fetch_usage_data() -> Dict[str, Any]:
 
     except Exception as exc:
         logger.debug("fetch_usage_data failed: %s", exc)
+        # If we have stale cached data, serve it as fallback instead of error.
+        # This prevents the status bar from flickering/disappearing when the
+        # API is temporarily unreachable (network blips, rate limits, etc.).
+        if stale_fallback:
+            stale_fallback["stale"] = True
+            # Re-save stale data with failure TTL so we don't hammer the API
+            _save_cache({"data": stale_fallback,
+                         "timestamp": int(time.time() * 1000)})
+            return stale_fallback
         return {"error": "loading", "apiUnavailable": True}

@@ -3,8 +3,9 @@ version: 2.0.0
 description: >
   Z.AI / Zhipu AI Coding Plan usage monitor for Hermes.
   Displays real-time token quota, MCP usage, estimated cost, and model
-  info in a Claude Code-style status bar.  Prints status bar to terminal
-  via post_llm_call hook and provides a zai_usage tool for on-demand queries.
+  info in a Claude Code-style status bar. Refreshes cache via pre_llm_call
+  hook so the Hermes built-in status bar stays current. Also provides
+  a zai_usage tool for on-demand queries.
 author: converted from glm-coding-plan-statusline (jeongsk)
 requires_env:
   - ANTHROPIC_BASE_URL
@@ -12,4 +13,4 @@ requires_env:
 provides_tools:
   - zai_usage
 provides_hooks:
-  - post_llm_call
+  - pre_llm_call

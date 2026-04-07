@@ -139,8 +139,17 @@ def register(ctx) -> None:
         emoji="\u25b6",
     )
 
-    # NOTE: post_llm_call hook removed — Hermes built-in status bar
-    # reads from ~/.hermes/zai-usage-cache.json directly. Printing to
-    # stdout here caused garbled ANSI codes inside the chat box.
+    # Register pre_llm_call hook to refresh the cache silently.
+    # The Hermes built-in status bar reads ~/.hermes/zai-usage-cache.json
+    # with a 330s TTL — we must refresh before it expires (plugin TTL=300s).
+    # Do NOT print anything here — that caused garbled ANSI in the chat box.
+    def _on_pre_llm_call(**kwargs):
+        try:
+            from .api_client import fetch_usage_data
+            fetch_usage_data()
+        except Exception:
+            pass
 
-    logger.info("zai-statusline plugin registered: tool=zai_usage (status bar via Hermes built-in)")
+    ctx.register_hook("pre_llm_call", _on_pre_llm_call)
+
+    logger.info("zai-statusline plugin registered: tool=zai_usage, hook=pre_llm_call (cache refresh for built-in status bar)")

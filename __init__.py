@@ -139,7 +139,8 @@ def register(ctx) -> None:
         emoji="\u25b6",
     )
 
-    # Register post_llm_call hook to print status bar after each turn
-    ctx.register_hook("post_llm_call", _on_post_llm_call)
+    # NOTE: post_llm_call hook removed — Hermes built-in status bar
+    # reads from ~/.hermes/zai-usage-cache.json directly. Printing to
+    # stdout here caused garbled ANSI codes inside the chat box.
 
-    logger.info("zai-statusline plugin registered: tool=zai_usage, hook=post_llm_call")
+    logger.info("zai-statusline plugin registered: tool=zai_usage (status bar via Hermes built-in)")

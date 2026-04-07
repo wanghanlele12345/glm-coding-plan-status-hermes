@@ -47,6 +47,28 @@ def _get_cwd_basename() -> str:
         return ""
 
 
+def _format_usage_line(model_name: str, data: dict) -> str:
+    """Build the compact status line string."""
+    token_pct = data.get("token_percent", 0)
+    wq_pct = data.get("token_percent_wq", 0)
+    mcp_pct = data.get("mcp_percent", 0)
+    reset_str = data.get("next_reset_time_str", "")
+    wq_reset_str = data.get("next_reset_time_wq_str", "")
+
+    # Usage: 5 Hours: 17% - 4h 32m  Weekly: 64% - 3d 4h  MCP: 75%
+    parts = [f"[Status: {model_name} Usage:"]
+    parts.append(f"5 Hours: {token_pct}%")
+    if reset_str:
+        parts.append(f"- {reset_str}")
+    if wq_pct:
+        wq_part = f"Weekly: {wq_pct}%"
+        if wq_reset_str:
+            wq_part += f" - {wq_reset_str}"
+        parts.append(wq_part)
+    parts.append(f"MCP: {mcp_pct}%]")
+    return "  ".join(parts)
+
+
 def _get_usage_context(**hook_kwargs: Any) -> str:
     """Fetch usage data and format as context string for injection.
 
@@ -62,22 +84,12 @@ def _get_usage_context(**hook_kwargs: Any) -> str:
         raw_model = hook_kwargs.get("model", "")
         model_name = map_model_name(raw_model) if raw_model else data.get("model_name", "Unknown")
 
-        token_pct = data.get("token_percent", 0)
-        mcp_pct = data.get("mcp_percent", 0)
-        reset_str = data.get("next_reset_time_str", "")
-        cost = data.get("total_cost", "0.00")
-
         if data.get("error") == "setup_required":
             return ""
 
-        # If API is unavailable and we have no stale data, still show status bar
-        # with the model name from hook_kwargs (not "Unknown") and cached-reset info
+        # If API is unavailable, still show status bar with whatever we have
         if data.get("apiUnavailable"):
-            parts = [f"[Status: {model_name}"]
-            parts.append(f"Tokens: --")
-            parts.append("MCP: --")
-            parts.append("]")
-            status_line = " ".join(parts)
+            status_line = f"[Status: {model_name} Usage: --  MCP: --]"
             return (
                 f"[INSTRUCTION: You MUST display the following status bar at the "
                 f"very beginning of your response, exactly as shown, before any "
@@ -86,18 +98,7 @@ def _get_usage_context(**hook_kwargs: Any) -> str:
                 f"{status_line}"
             )
 
-        parts = [f"[Status: {model_name}"]
-        parts.append(f"Tokens: {token_pct}%")
-        if reset_str:
-            parts.append(f"resets in {reset_str}")
-        parts.append(f"MCP: {mcp_pct}%")
-        if cost != "0.00":
-            parts.append(f"${cost}")
-        parts.append("]")
-
-        status_line = " ".join(parts)
-        # Wrap with a directive so the model ALWAYS displays the status bar,
-        # even when the user's message doesn't naturally prompt it.
+        status_line = _format_usage_line(model_name, data)
         return (
             f"[INSTRUCTION: You MUST display the following status bar at the "
             f"very beginning of your response, exactly as shown, before any "

@@ -27,8 +27,9 @@ DEFAULT_TIMEOUT = 3  # seconds
 
 # Cache file and TTL
 CACHE_FILE = Path.home() / ".hermes" / "zai-usage-cache.json"
-CACHE_TTL_SUCCESS = 60_000   # 60 seconds
-CACHE_TTL_FAILURE = 15_000   # 15 seconds
+CACHE_TTL_SUCCESS = 300_000   # 5 minutes (was 60s — too frequent API calls)
+CACHE_TTL_FAILURE = 120_000   # 2 minutes (was 15s — too aggressive retry)
+CACHE_TTL_STALE = 600_000     # 10 minutes — absolute max to keep stale data
 
 
 def _build_api_urls(base_url: str) -> Dict[str, str]:
@@ -112,34 +113,59 @@ def load_config() -> Optional[Dict[str, str]]:
     return None
 
 
+def _classify_token_limit(lim: Dict[str, Any]) -> str:
+    """Classify a TOKENS_LIMIT entry by its unit.
+
+    unit 3 → '5h'  (5-hour quota)
+    unit 6 → 'wq'  (weekly quota)
+    Other  → '5h'  (default to 5h)
+    """
+    unit = lim.get("unit", 0)
+    if unit == 6:
+        return "wq"
+    return "5h"
+
+
 def fetch_quota(urls: Dict[str, str], auth_token: str) -> Dict[str, Any]:
-    """Fetch token and MCP quota limits."""
+    """Fetch token and MCP quota limits.
+
+    Returns separate 5H and Weekly Quota (WQ) token percentages
+    so the status bar can display both.
+    """
     result = _https_get(urls["quota_limit_url"], auth_token)
     limits = result.get("data", {}).get("limits", [])
 
     mcp_pct = 0
-    next_reset_ms: Optional[int] = None
-
-    # Collect all TOKENS_LIMIT entries, pick the one with highest usage
-    token_limits = [lim for lim in limits if lim.get("type") == "TOKENS_LIMIT"]
-    if token_limits:
-        # Sort by percentage descending to get the most-consumed tier
-        token_limits.sort(key=lambda l: l.get("percentage", 0), reverse=True)
-        token_pct = round(token_limits[0].get("percentage", 0))
-        # Use the earliest reset time (soonest limit)
-        resets = [l.get("nextResetTime") for l in token_limits if l.get("nextResetTime")]
-        next_reset_ms = min(resets) if resets else None
-    else:
-        token_pct = 0
+    five_h_pct = 0
+    five_h_reset: Optional[int] = None
+    wq_pct = 0
+    wq_reset: Optional[int] = None
 
     for lim in limits:
-        if lim.get("type") == "TIME_LIMIT":
+        if lim.get("type") == "TOKENS_LIMIT":
+            category = _classify_token_limit(lim)
+            pct = round(lim.get("percentage", 0))
+            reset = lim.get("nextResetTime")
+            if category == "wq":
+                wq_pct = pct
+                if reset:
+                    wq_reset = reset
+            else:
+                five_h_pct = pct
+                if reset:
+                    five_h_reset = reset
+        elif lim.get("type") == "TIME_LIMIT":
             mcp_pct = round(lim.get("percentage", 0))
 
+    # For the primary reset time, prefer 5H (soonest)
+    next_reset_ms = five_h_reset or wq_reset
+
     return {
-        "token_percent": token_pct,
+        "token_percent": five_h_pct,
+        "token_percent_wq": wq_pct,
         "mcp_percent": mcp_pct,
         "next_reset_time": next_reset_ms,
+        "next_reset_time_wq": wq_reset,
     }
 
 
@@ -200,22 +226,24 @@ def fetch_usage_data() -> Dict[str, Any]:
     model_name, next_reset_time, next_reset_time_str, error.
 
     Cache strategy:
-    - Fresh data (success): cached for CACHE_TTL_SUCCESS (60 s)
-    - API failure: cached for CACHE_TTL_FAILURE (15 s) with apiUnavailable flag
-    - If cache is expired but API fails, stale cache is served as fallback
-      (with a "stale" flag) instead of returning an error — this prevents
-      the status bar from disappearing during transient network issues.
+    - Fresh data (success): cached for CACHE_TTL_SUCCESS (5 min)
+    - API failure: cached for CACHE_TTL_FAILURE (2 min)
+    - Stale cache (expired but usable fallback): served for up to
+      CACHE_TTL_STALE (10 min) — this prevents the status bar from
+      ever disappearing due to transient API failures.
+    - Only returns apiUnavailable if NO cache has EVER been written.
     """
     # Check cache first
     cache = _load_cache()
     stale_fallback: Optional[Dict] = None
     if cache:
         ts = cache.get("timestamp", 0)
+        age = time.time() * 1000 - ts
         ttl = CACHE_TTL_FAILURE if cache.get("data", {}).get("apiUnavailable") else CACHE_TTL_SUCCESS
-        if time.time() * 1000 - ts < ttl:
+        if age < ttl:
             return cache["data"]
-        # Cache expired — keep it as stale fallback in case the API is down
-        if not cache.get("data", {}).get("apiUnavailable"):
+        # Cache expired — keep as stale fallback if still within STALE limit
+        if age < CACHE_TTL_STALE and not cache.get("data", {}).get("apiUnavailable"):
             stale_fallback = cache["data"]
 
     # Load config
@@ -234,7 +262,7 @@ def fetch_usage_data() -> Dict[str, Any]:
         start = _fmt_datetime(five_h_ago)
         end = _fmt_datetime(now)
 
-        # Parallel-ish fetch (sequential is fine for 3 lightweight calls)
+        # Fetch quota (primary data — must not fail silently)
         quota = fetch_quota(urls, auth)
 
         mcp_pct = quota.get("mcp_percent", 0)
@@ -265,6 +293,7 @@ def fetch_usage_data() -> Dict[str, Any]:
 
         data = {
             "token_percent": quota.get("token_percent", 0),
+            "token_percent_wq": quota.get("token_percent_wq", 0),
             "mcp_percent": mcp_pct,
             "total_cost": total_cost,
             "model_name": model_name,
@@ -273,18 +302,27 @@ def fetch_usage_data() -> Dict[str, Any]:
             "next_reset_time_str": next_reset_str,
         }
 
+        # Format WQ reset time
+        wq_reset_str = ""
+        if quota.get("next_reset_time_wq"):
+            from .formatting import format_reset_time
+            wq_reset_str = format_reset_time(quota["next_reset_time_wq"])
+        data["next_reset_time_wq"] = quota.get("next_reset_time_wq")
+        data["next_reset_time_wq_str"] = wq_reset_str
+
         _save_cache({"data": data, "timestamp": data["timestamp"]})
         return data
 
     except Exception as exc:
         logger.debug("fetch_usage_data failed: %s", exc)
-        # If we have stale cached data, serve it as fallback instead of error.
-        # This prevents the status bar from flickering/disappearing when the
-        # API is temporarily unreachable (network blips, rate limits, etc.).
+        # CRITICAL: always serve stale data if available, never return
+        # apiUnavailable when we have any cached data at all.
+        # This prevents the status bar from ever disappearing.
         if stale_fallback:
             stale_fallback["stale"] = True
-            # Re-save stale data with failure TTL so we don't hammer the API
             _save_cache({"data": stale_fallback,
                          "timestamp": int(time.time() * 1000)})
             return stale_fallback
+
+        # Only truly unavailable if we've never had data
         return {"error": "loading", "apiUnavailable": True}

@@ -1,10 +1,10 @@
 name: zai-statusline
-version: 1.0.0
+version: 2.0.0
 description: >
   Z.AI / Zhipu AI Coding Plan usage monitor for Hermes.
   Displays real-time token quota, MCP usage, estimated cost, and model
-  info in a Claude Code-style status bar.  Injects usage context via
-  pre_llm_call hook and provides a zai_usage tool for on-demand queries.
+  info in a Claude Code-style status bar.  Prints status bar to terminal
+  via post_llm_call hook and provides a zai_usage tool for on-demand queries.
 author: converted from glm-coding-plan-statusline (jeongsk)
 requires_env:
   - ANTHROPIC_BASE_URL
@@ -12,4 +12,4 @@ requires_env:
 provides_tools:
   - zai_usage
 provides_hooks:
-  - pre_llm_call
+  - post_llm_call

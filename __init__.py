@@ -47,68 +47,33 @@ def _get_cwd_basename() -> str:
         return ""
 
 
-def _format_usage_line(model_name: str, data: dict) -> str:
-    """Build the compact status line string."""
-    token_pct = data.get("token_percent", 0)
-    wq_pct = data.get("token_percent_wq", 0)
-    mcp_pct = data.get("mcp_percent", 0)
-    reset_str = data.get("next_reset_time_str", "")
-    wq_reset_str = data.get("next_reset_time_wq_str", "")
+def _print_status_bar(**hook_kwargs: Any) -> None:
+    """Fetch usage data and print ANSI status bar to terminal (stdout).
 
-    # Usage: 5 Hours: 17% - 4h 32m  Weekly: 64% - 3d 4h  MCP: 75%
-    parts = [f"[Status: {model_name} Usage:"]
-    parts.append(f"5 Hours: {token_pct}%")
-    if reset_str:
-        parts.append(f"- {reset_str}")
-    if wq_pct:
-        wq_part = f"Weekly: {wq_pct}%"
-        if wq_reset_str:
-            wq_part += f" - {wq_reset_str}"
-        parts.append(wq_part)
-    parts.append(f"MCP: {mcp_pct}%]")
-    return "  ".join(parts)
-
-
-def _get_usage_context(**hook_kwargs: Any) -> str:
-    """Fetch usage data and format as context string for injection.
-
-    Returns a plain-text status line (no ANSI codes) that gets injected
-    into the user message via the pre_llm_call hook, so the agent
-    naturally surfaces usage info in its responses.
+    Called via post_llm_call hook — prints the status bar directly to
+    the terminal after the assistant response, so it appears below the
+    chat output without polluting the LLM context.
     """
     from .api_client import fetch_usage_data
-    from .model_mapper import map_model_name
+    from .formatting import render_status_line
 
     try:
         data = fetch_usage_data()
         raw_model = hook_kwargs.get("model", "")
+        from .model_mapper import map_model_name
         model_name = map_model_name(raw_model) if raw_model else data.get("model_name", "Unknown")
 
-        if data.get("error") == "setup_required":
-            return ""
-
-        # If API is unavailable, still show status bar with whatever we have
-        if data.get("apiUnavailable"):
-            status_line = f"[Status: {model_name} Usage: --  MCP: --]"
-            return (
-                f"[INSTRUCTION: You MUST display the following status bar at the "
-                f"very beginning of your response, exactly as shown, before any "
-                f"other content. Do NOT omit it, summarize it, or rephrase it. "
-                f"This is a persistent UI element that must appear in every reply.]\n"
-                f"{status_line}"
-            )
-
-        status_line = _format_usage_line(model_name, data)
-        return (
-            f"[INSTRUCTION: You MUST display the following status bar at the "
-            f"very beginning of your response, exactly as shown, before any "
-            f"other content. Do NOT omit it, summarize it, or rephrase it. "
-            f"This is a persistent UI element that must appear in every reply.]\n"
-            f"{status_line}"
+        status = render_status_line(
+            data=data,
+            model_name=model_name,
+            cwd=_get_cwd_basename(),
+            git_branch=_get_git_branch(),
         )
+        # Print directly to terminal (stderr won't be captured, but
+        # stdout works fine since post_llm_call runs after streaming)
+        print(status, flush=True)
     except Exception as exc:
-        logger.debug("usage context fetch failed: %s", exc)
-        return ""
+        logger.debug("status bar print failed: %s", exc)
 
 
 # ---------------------------------------------------------------------------
@@ -118,7 +83,7 @@ def _get_usage_context(**hook_kwargs: Any) -> str:
 def _zai_usage_handler(**kwargs: Any) -> str:
     """Tool handler: return Z.AI usage status as formatted text."""
     from .api_client import fetch_usage_data
-    from .formatting import render_status_line, Colors
+    from .formatting import render_status_line
 
     data = fetch_usage_data()
     status = render_status_line(
@@ -133,17 +98,13 @@ def _zai_usage_handler(**kwargs: Any) -> str:
 # Hook callbacks
 # ---------------------------------------------------------------------------
 
-def _on_pre_llm_call(**kwargs: Any) -> Dict[str, str]:
-    """Inject usage context into the current turn via pre_llm_call hook.
+def _on_post_llm_call(**kwargs: Any) -> None:
+    """Print status bar to terminal after each LLM turn completes.
 
-    The context string is appended to the user message, so the agent
-    naturally surfaces the usage info in its response — mimicking
-    Claude Code's status bar behavior.
+    Uses post_llm_call hook so the status bar appears below the assistant
+    response in the terminal, without injecting anything into the LLM context.
     """
-    ctx = _get_usage_context(**kwargs)
-    if ctx:
-        return {"context": ctx}
-    return {}
+    _print_status_bar(**kwargs)
 
 
 # ---------------------------------------------------------------------------
@@ -178,7 +139,7 @@ def register(ctx) -> None:
         emoji="\u25b6",
     )
 
-    # Register pre_llm_call hook to inject usage context each turn
-    ctx.register_hook("pre_llm_call", _on_pre_llm_call)
+    # Register post_llm_call hook to print status bar after each turn
+    ctx.register_hook("post_llm_call", _on_post_llm_call)
 
-    logger.info("zai-statusline plugin registered: tool=zai_usage, hook=pre_llm_call")
+    logger.info("zai-statusline plugin registered: tool=zai_usage, hook=post_llm_call")

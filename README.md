@@ -10,13 +10,15 @@ Converted from [glm-coding-plan-statusline](https://github.com/jeongsk/glm-codin
 
 ## Features
 
-- **Real-time usage monitoring** - Token and MCP quota updated every 60 seconds with smart caching
-- **Auto status bar** - Usage info automatically injected into every assistant response via `pre_llm_call` hook
+- **Real-time usage monitoring** - Token and MCP quota with smart caching (5 min success / 2 min failure / 10 min stale)
+- **Dual quota display** - Shows both 5-Hour and Weekly token quotas with reset countdowns
+- **Auto status bar** - Usage info printed to terminal after each LLM turn via `post_llm_call` hook
+- **Hermes CLI integration** - Patch included to show 5H + Weekly quota in the built-in TUI status bar
 - **On-demand query** - Use the `zai_usage` tool to get a colorful ANSI status bar anytime
 - **Zero dependencies** - Pure Python stdlib (urllib, json, pathlib)
 - **Multiple platforms** - Supports Z.AI (`api.z.ai`), Zhipu AI (`open.bigmodel.cn`), and dev (`dev.bigmodel.cn`)
 - **Cost estimation** - Estimates cost based on token usage (input: $3/M, output: $15/M)
-- **Reset countdown** - Shows time until next quota reset
+- **Reset countdown** - Shows time until next quota reset for both 5H and Weekly
 - **Claude Code-style design** - Colorful ANSI progress bars and layout matching Claude Code's status line
 
 ## Prerequisites
@@ -69,11 +71,29 @@ The plugin also checks Claude Code settings files as fallback:
 
 ### Automatic (Recommended)
 
-Once installed, the status bar appears automatically at the beginning of every assistant response:
+Once installed, the status bar is printed to the terminal after each assistant response:
 
 ```
-[Status: GLM-5 Turbo Tokens: 75% resets in 3h 56m MCP: 75%]
+ ▶ GLM-5 Turbo │ 5 Hours: [███████░░░] 79% (Resets in 3h 56m)  Weekly: [█████░░░░░] 64% (Resets in 3d 4h) │ MCP: 75%
+ ▶ my-project ≡ main │ $0.42
 ```
+
+### Hermes CLI Status Bar (Optional)
+
+The plugin ships with a patch for Hermes CLI's built-in TUI status bar. After applying, the bottom status bar shows both 5H and Weekly quotas:
+
+```
+⚕ glm-5-turbo │ 19.4K/200K │ [███░░░░░░░░] 10% │ 3m │ 5H: 35% resets in 4h 13m │ Weekly: 67% resets in 4d 5h MCP: 75%
+```
+
+Apply the patch:
+
+```bash
+cd ~/.hermes/hermes-agent
+git apply < ~/.hermes/plugins/zai-statusline/patches/hermes-cli-weekly-quota.patch
+```
+
+Then restart Hermes.
 
 ### On-Demand Tool
 
@@ -96,16 +116,19 @@ zai-statusline/
 ├── __init__.py        # Entry point: register(ctx) - tools + hooks
 ├── api_client.py      # Z.AI API client: quota, model usage, tool usage
 ├── formatting.py      # ANSI colors, progress bars, status line rendering
-├── model_mapper.py    # Claude/Anthropic model name → GLM model name mapping
+├── model_mapper.py    # Claude/Anthropic model name -> GLM model name mapping
+├── patches/
+│   └── hermes-cli-weekly-quota.patch  # Patch for Hermes CLI TUI status bar
 └── README.md
 ```
 
 ## How It Works
 
-1. **pre_llm_call hook** - Before each LLM call, the plugin fetches usage data from the Z.AI monitoring API and injects a status line into the user message
+1. **post_llm_call hook** - After each LLM call completes, the plugin fetches usage data from the Z.AI monitoring API and prints a colorful status bar directly to the terminal
 2. **zai_usage tool** - Registered as an on-demand tool for manual status checks with full ANSI formatting
-3. **Caching** - API responses are cached for 60 seconds (success) or 15 seconds (failure) to avoid rate limits
-4. **Auto-credentials** - Reads API tokens from environment variables, Hermes config, or Claude Code settings
+3. **Hermes CLI integration** - A patch is provided to modify Hermes CLI's built-in TUI status bar to also display 5H + Weekly quotas
+4. **Caching** - API responses are cached for 5 minutes (success), 2 minutes (failure), with a 10-minute stale fallback
+5. **Auto-credentials** - Reads API tokens from environment variables, Hermes config, or Claude Code settings
 
 ## Supported API Endpoints
 
@@ -118,8 +141,9 @@ zai-statusline/
 ## Caching
 
 Usage data is cached at `~/.hermes/zai-usage-cache.json`:
-- **Success**: 60 second TTL
-- **Failure**: 15 second TTL (fast retry)
+- **Success**: 5 minute TTL
+- **Failure**: 2 minute TTL (fast retry)
+- **Stale fallback**: 10 minute absolute max — prevents status bar from disappearing during transient API failures
 
 ## Troubleshooting
 
@@ -136,7 +160,7 @@ If you see SSL or connection errors, the plugin gracefully falls back and shows 
 
 ### Status bar disappears mid-conversation
 
-This can happen if the LLM decides not to echo the injected context. The plugin includes a directive instruction to minimize this, but it's a limitation of the prompt-injection approach. Use the `zai_usage` tool for guaranteed display.
+This was a known issue in v1.x (pre_llm_call approach). Since v2.0, the plugin uses `post_llm_call` to print directly to terminal, so this should no longer occur. If it does, check that the plugin is loaded and API credentials are valid.
 
 ## Credits
 

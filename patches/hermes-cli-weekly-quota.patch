@@ -1,0 +1,163 @@
+diff --git a/cli.py b/cli.py
+index ad7127e7..3b0e8f77 100644
+--- a/cli.py
++++ b/cli.py
+@@ -1412,6 +1412,32 @@ class HermesCLI:
+         filled = round((safe_percent / 100) * width)
+         return f"[{('█' * filled) + ('░' * max(0, width - filled))}]"
+ 
++    @staticmethod
++    def _load_provider_usage_cache() -> Optional[Dict[str, Any]]:
++        """Load provider usage data from zai-statusline plugin cache.
++
++        Reads ~/.hermes/zai-usage-cache.json and returns the cached data dict
++        if available and not expired.  Returns None if no cache or stale.
++        """
++        try:
++            import json, time as _time
++            cache_path = Path.home() / ".hermes" / "zai-usage-cache.json"
++            if not cache_path.exists():
++                return None
++            raw = cache_path.read_text("utf-8")
++            cache = json.loads(raw)
++            data = cache.get("data", {})
++            ts = cache.get("timestamp", 0)
++            # Cache TTL: 330 seconds — must exceed the plugin's own 300s (5 min)
++            # refresh cycle so the TUI bar never goes blank between LLM turns.
++            if _time.time() * 1000 - ts > 330_000:
++                return None
++            if data.get("error"):
++                return None
++            return data
++        except Exception:
++            return None
++
+     def _get_status_bar_snapshot(self) -> Dict[str, Any]:
+         model_name = self.model or "unknown"
+         model_short = model_name.split("/")[-1] if "/" in model_name else model_name
+@@ -1437,6 +1463,7 @@ class HermesCLI:
+             "session_total_tokens": 0,
+             "session_api_calls": 0,
+             "compressions": 0,
++            "provider_usage": None,
+         }
+ 
+         agent = getattr(self, "agent", None)
+@@ -1462,6 +1489,11 @@ class HermesCLI:
+             if context_length:
+                 snapshot["context_percent"] = max(0, min(100, round((context_tokens / context_length) * 100)))
+ 
++        # Load provider usage (e.g. zai-statusline quota data)
++        provider_usage = self._load_provider_usage_cache()
++        if provider_usage:
++            snapshot["provider_usage"] = provider_usage
++
+         return snapshot
+ 
+     @staticmethod
+@@ -1537,6 +1569,31 @@ class HermesCLI:
+ 
+             parts = [f"⚕ {snapshot['model_short']}", context_label, percent_label]
+             parts.append(duration_label)
++
++            # Append provider usage (5H + Weekly + MCP)
++            prov = snapshot.get("provider_usage")
++            if prov:
++                tok_pct = prov.get("token_percent", 0)
++                wq_pct = prov.get("token_percent_wq", 0)
++                mcp_pct = prov.get("mcp_percent", 0)
++                reset_str = prov.get("next_reset_time_str", "")
++                wq_reset_str = prov.get("next_reset_time_wq_str", "")
++                usage_parts = []
++                if tok_pct > 0:
++                    t = f"5H:{tok_pct}%"
++                    if reset_str:
++                        t += f"({reset_str})"
++                    usage_parts.append(t)
++                if wq_pct > 0:
++                    w = f"Wk:{wq_pct}%"
++                    if wq_reset_str:
++                        w += f"({wq_reset_str})"
++                    usage_parts.append(w)
++                if mcp_pct > 0:
++                    usage_parts.append(f"MCP:{mcp_pct}%")
++                if usage_parts:
++                    parts.append(" ".join(usage_parts))
++
+             return self._trim_status_bar_text(" │ ".join(parts), width)
+         except Exception:
+             return f"⚕ {self.model if getattr(self, 'model', None) else 'Hermes'}"
+@@ -1577,8 +1634,35 @@ class HermesCLI:
+                         (self._status_bar_context_style(percent), percent_label),
+                         ("class:status-bar-dim", " · "),
+                         ("class:status-bar-dim", duration_label),
+-                        ("class:status-bar", " "),
+                     ]
++
++                    # Compact provider usage for narrow terminals (5H + Weekly + MCP)
++                    prov = snapshot.get("provider_usage")
++                    if prov:
++                        tok_pct = prov.get("token_percent", 0)
++                        wq_pct = prov.get("token_percent_wq", 0)
++                        mcp_pct = prov.get("mcp_percent", 0)
++                        reset_str = prov.get("next_reset_time_str", "")
++                        wq_reset_str = prov.get("next_reset_time_wq_str", "")
++                        if tok_pct > 0:
++                            usage_style = "class:status-bar-critical" if tok_pct >= 90 else (
++                                "class:status-bar-bad" if tok_pct >= 70 else "class:status-bar-warn")
++                            frags.append(("class:status-bar-dim", " · "))
++                            frags.append((usage_style, f"T:{tok_pct}%"))
++                            if reset_str:
++                                frags.append(("class:status-bar-dim", f"/{reset_str}"))
++                        if wq_pct > 0:
++                            wq_style = "class:status-bar-critical" if wq_pct >= 90 else (
++                                "class:status-bar-bad" if wq_pct >= 70 else "class:status-bar-warn")
++                            frags.append(("class:status-bar-dim", " "))
++                            frags.append((wq_style, f"W:{wq_pct}%"))
++                            if wq_reset_str:
++                                frags.append(("class:status-bar-dim", f"/{wq_reset_str}"))
++                        if mcp_pct > 0:
++                            frags.append(("class:status-bar-dim", " "))
++                            frags.append(("class:status-bar-dim", f"M:{mcp_pct}%"))
++
++                    frags.append(("class:status-bar", " "))
+                 else:
+                     if snapshot["context_length"]:
+                         ctx_total = _format_context_length(snapshot["context_length"])
+@@ -1599,9 +1683,35 @@ class HermesCLI:
+                         (bar_style, percent_label),
+                         ("class:status-bar-dim", " │ "),
+                         ("class:status-bar-dim", duration_label),
+-                        ("class:status-bar", " "),
+                     ]
+ 
++                    # Append provider usage (5H + Weekly + MCP from zai-statusline cache)
++                    prov = snapshot.get("provider_usage")
++                    if prov:
++                        tok_pct = prov.get("token_percent", 0)
++                        wq_pct = prov.get("token_percent_wq", 0)
++                        mcp_pct = prov.get("mcp_percent", 0)
++                        reset_str = prov.get("next_reset_time_str", "")
++                        wq_reset_str = prov.get("next_reset_time_wq_str", "")
++                        if tok_pct > 0:
++                            usage_bar_style = "class:status-bar-critical" if tok_pct >= 90 else (
++                                "class:status-bar-bad" if tok_pct >= 70 else "class:status-bar-warn")
++                            frags.append(("class:status-bar-dim", " │ "))
++                            frags.append((usage_bar_style, f"5H: {tok_pct}%"))
++                            if reset_str:
++                                frags.append(("class:status-bar-dim", f" resets in {reset_str}"))
++                        if wq_pct > 0:
++                            wq_style = "class:status-bar-critical" if wq_pct >= 90 else (
++                                "class:status-bar-bad" if wq_pct >= 70 else "class:status-bar-warn")
++                            frags.append(("class:status-bar-dim", " │ "))
++                            frags.append((wq_style, f"Weekly: {wq_pct}%"))
++                            if wq_reset_str:
++                                frags.append(("class:status-bar-dim", f" resets in {wq_reset_str}"))
++                        if mcp_pct > 0:
++                            frags.append(("class:status-bar-dim", f" MCP: {mcp_pct}%"))
++
++                    frags.append(("class:status-bar", " "))
++
+             total_width = sum(self._status_bar_display_width(text) for _, text in frags)
+             if total_width > width:
+                 plain_text = "".join(text for _, text in frags)
